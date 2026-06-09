@@ -144,6 +144,26 @@ class IncidentMemory:
             source_q=question[:120],
         )
 
+    def store_reflection(self, lesson: str, source_q: str = "") -> None:
+        """
+        Store a post-question reflection / lesson-learned for future use.
+
+        Unlike store_from_answer (which stores verified facts), reflections
+        are investigative lessons (e.g. "For ransomware IP questions, check
+        DeviceNetworkEvents not just AlertEvidence").
+
+        Stored with entity='LESSON' so they are easily distinguishable
+        and can be retrieved by any question that hits the keyword index.
+        """
+        if not lesson:
+            return
+        self.store(
+            entity="LESSON",
+            property="lesson_learned",
+            value=lesson.strip()[:400],
+            source_q=source_q[:120],
+        )
+
     # ------------------------------------------------------------------
     # Read API
     # ------------------------------------------------------------------
@@ -196,13 +216,24 @@ class IncidentMemory:
     def get_context_block(self, question: str) -> str:
         """
         Return a formatted block to prepend to the agent's first observation.
-        Empty string if no relevant facts found.
+        Separates confirmed facts from lesson-learned reflections.
+        Empty string if nothing relevant found.
         """
         hits = self.lookup(question)
         if not hits:
             return ""
-        lines = ["[Cached facts from earlier questions in this incident:]"]
-        lines.extend(f"  • {h}" for h in hits)
+
+        facts = [h for h in hits if "LESSON → lesson_learned:" not in h]
+        lessons = [h.replace("LESSON → lesson_learned: ", "") for h in hits
+                   if "LESSON → lesson_learned:" in h]
+
+        lines = []
+        if facts:
+            lines.append("[Cached facts from earlier questions in this incident:]")
+            lines.extend(f"  • {h}" for h in facts)
+        if lessons:
+            lines.append("[Lessons learned from earlier questions — apply these:]")
+            lines.extend(f"  ⚠ {l}" for l in lessons)
         return "\n".join(lines)
 
     # ------------------------------------------------------------------

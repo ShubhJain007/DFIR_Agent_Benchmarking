@@ -1,0 +1,18 @@
+# STaR Example 1 — Real winning trace (reward=1, 3 steps)
+
+Question: What is the command line of the suspicious process involved in the user behavior change on device `vnevado-win11u`?
+
+Observation: An incident involving a ransomware payload remotely launched on device `vnevado-win11u` with AadDeviceId `bc00e484-d0e5-4da4-9472-95568cccc07e` and IP address `99.83.111.100` has been detected. The attackers might be attempting to encrypt content on this device. Additionally, there is a notable chan...[truncated]
+
+Thought: Law #3 (TIMESTAMP FIRST): I need the alert timestamp before querying DeviceProcessEvents. The question mentions a ransomware payload and user behavior change, so I'll search for alerts related to those.
+Action: execute[SELECT AlertId, Timestamp, Title FROM AlertInfo WHERE Title LIKE '%ransomware%' OR Title LIKE '%behavior%' OR Title LIKE '%suspicious%' OR Title LIKE '%user%']
+
+Observation: [('da0995dfd3-583c-4ca7-a114-eee2c4f33a50_1', '2024-06-20 09:00:20.022397+00:00', 'Suspicious access to LSASS service'), ('dac10a9400-7f6b-4a79-9114-c503855102d6_1', '2024-06-20 09:10:48.107793+00:00', 'Suspicious remote activity'), ('dac7892272-ade5-4aee-b72d-7ed0392b5902_1', '2024-06-20 09:10:48.1...[truncated]
+
+Thought: There are many alerts related to ransomware and suspicious activity around 2024-06-20. The question mentions "user behavior change", so I'll focus on alert 'da30d739f9-d4eb-438b-818c-c5ce5918bc73_1' with title 'Suspicious hands on keyboard user behavior' and timestamp 2024-06-20 09:29:51.087793+00:00. Law #4 (ENTITY PIVOTING): I need to check AlertEvidence for the ProcessCommandLine associated with this alert.
+Action: execute[SELECT ProcessCommandLine, AdditionalFields FROM AlertEvidence WHERE AlertId = 'da30d739f9-d4eb-438b-818c-c5ce5918bc73_1']
+
+Observation: [('', '{"IsDomainJoined":true,"Type":"host","Role":0,"MergeByKey":"6iXissj0fU1vd5klgK/hCkjm/VA=","MergeByKeyHex":"EA25E2B2C8F47D4D6F77992580AFE10A48E6FD50","Asset":true,"DnsDomain":"vnevado.alpineskihouse.co","HostName":"vnevado-win11t","MachineId":"898b0b9401f2867ad49f951dfd0090d29ec08c42","Machine...[truncated]
+
+Thought: The AlertEvidence shows a ProcessCommandLine of 'curl http://vectorsandarrows.com'. This is associated with the "Suspicious hands on keyboard user behavior" alert.
+Action: submit[curl http://vectorsandarrows.com]

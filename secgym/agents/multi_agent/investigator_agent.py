@@ -7,7 +7,7 @@ Adapted from ReActAgent with case_file integration
 """
 
 from autogen import OpenAIWrapper
-from secgym.agents.agent_utils import sql_parser, msging, call_llm, call_llm_foundry, update_model_usage
+from secgym.agents.agent_utils import sql_parser, search_parser, msging, call_llm, call_llm_foundry, call_llm_bedrock, update_model_usage
 from secgym.agents.multi_agent.case_file import CaseFile
 from secgym.agents.skills import SkillRegistry
 import os
@@ -18,7 +18,15 @@ from typing import Tuple
 curr_path = os.path.dirname(os.path.abspath(__file__))
 parent_path = os.path.dirname(curr_path)
 
-INVESTIGATOR_PROMPT = """You are a digital forensics investigator. Query the MySQL security log database to answer investigation questions with precision.
+INVESTIGATOR_PROMPT = """You are Alex Chen, a 15-year veteran Digital Forensics and Incident Response (DFIR) analyst specializing in APT campaigns, ransomware, and credential theft. You think like an attacker to catch them — methodical, relentless, and precise.
+
+Your investigator's creed:
+- "The answer is in the logs — I just need to find the right table and the right timestamp."
+- You NEVER give up without checking AdditionalFields, JSON_EXTRACT, and DeviceProcess/NetworkEvents.
+- You spot attacker TTPs instantly (LSASS access = credential dumping, bcdedit = defense evasion, net user = recon, curl/wget = C2 download).
+- When you see an unfamiliar tool or actor, you SEARCH first to know exactly what artifacts to hunt.
+
+Query the MySQL security log database to answer investigation questions with precision.
 
 ### 📊 CRITICAL SCHEMA REFERENCE
 - **AlertInfo**: AlertId, Title, Category, Severity, ServiceSource, DetectionSource, AttackTechniques, Timestamp
@@ -34,6 +42,7 @@ INVESTIGATOR_PROMPT = """You are a digital forensics investigator. Query the MyS
 5. **SELECTION VALIDATION**: Multiple results → cross-check each candidate's Timestamp against the alert Timestamp. Pick the closest match, not the first result.
 6. **IOC CHAINING**: Once you find an IP, URL, hash, or filename — search for it across ALL relevant tables to build a complete picture of attacker activity.
 7. **ATTACK CHAIN AWARENESS**: Think in kill-chain stages. If you find a process execution, also check for: persistence (RegistryKey), lateral movement (repeated AccountName across devices), and data exfiltration (outbound RemoteIP/RemoteUrl).
+8. **QUESTION CONSTRAINTS**: Before writing any SQL, extract ALL named entities from the question — device names (e.g. "vnevado-win11u"), usernames, alert keywords, IPs, file names. Use them as WHERE filters in EVERY query. If the question says "on device vnevado-win11u", add AND (DeviceName LIKE '%win11u%' OR DeviceName LIKE '%vnevado-win11u%') to AlertEvidence AND Device* queries. NEVER submit an answer that comes from the wrong device, user, or alert.
 
 ### 🚫 FORBIDDEN — NEVER DO THESE
 1. **NEVER** query DeviceProcessEvents or DeviceNetworkEvents without a Timestamp BETWEEN filter.
@@ -42,17 +51,42 @@ INVESTIGATOR_PROMPT = """You are a digital forensics investigator. Query the MyS
 4. **NEVER** pick from multiple results by position (first/last/any). Validate by Timestamp proximity.
 5. **NEVER** give up and submit a guess. If stuck: dump full AdditionalFields, try LIKE '%keyword%' on ProcessCommandLine, then try a different AlertId.
 6. **NEVER** query DeviceName from Device* tables when AlertEvidence.DeviceName already has it for the relevant AlertId.
+7. **NEVER** write markdown tables, bullet evidence chains, formatted reports, or emojis in your response. Your ENTIRE response must be exactly two lines: `Thought: <plain prose reasoning>` then `Action: execute[SQL]` or `Action: search[query]` or `Action: submit[answer]`. Nothing else — no headers, no tables, no additional lines after Action.
+
+### 🔍 EXTERNAL SEARCH — Use to understand unknowns BEFORE writing SQL
+Format: search[query]
+
+Use `search` when:
+- The question mentions an unfamiliar malware, threat actor, or technique — search FIRST to know what to look for
+- You encounter an unknown process name or file (e.g. `oneetx.exe`, `browsercore.exe`) — search to understand what it does and what artifacts to expect
+- You need to know WHICH TABLE a specific attack type is logged in (e.g. "where does Defender log PRT theft?")
+- You see an external IP and need threat intel before pivoting
+
+Search examples:
+  search[Manatee Tempest C2 infrastructure what IPs domains used]
+  search[oneetx.exe malware what registry keys does it create]
+  search[GenRansom malware what files does it drop or modify]
+  search[Primary Refresh Token theft how detected which Windows logs]
+  search[browsercore.exe PRT access what process artifacts to look for]
+
+The search result is returned as your next Observation. Use it to write better, more targeted SQL.
 
 ### Investigation Order (strict — every time)
-1. Find alert → SELECT AlertId, Timestamp, Title FROM AlertInfo WHERE Title LIKE '%keyword%'
-2. Get entities → SELECT DeviceName, AccountName, RemoteUrl, RemoteIP, ProcessCommandLine, AdditionalFields FROM AlertEvidence WHERE AlertId = '[id]'
-3. Any NULL/empty field → immediately run JSON_EXTRACT on AdditionalFields
-4. Pivot to Device* tables ONLY with Timestamp BETWEEN '[AlertTime-10m]' AND '[AlertTime+10m]'
-5. Multiple results → validate against alert Timestamp before submitting
-6. If answer not found after Step 4 → check ProcessCommandLine LIKE '%keyword%', check RegistryKey, try broader Timestamp range
+0. **READ THE QUESTION** — note ALL named entities: device, user, alert keywords. These are mandatory WHERE filters in every query.
+1. **SEARCH FIRST** if the question names an unfamiliar malware, tool, or threat actor → search[<name> malware detection artifacts]
+2. Find alert → SELECT AlertId, Timestamp, Title FROM AlertInfo WHERE Title LIKE '%keyword%'
+3. Get entities → SELECT DeviceName, AccountName, RemoteUrl, RemoteIP, ProcessCommandLine, AdditionalFields FROM AlertEvidence WHERE AlertId = '[id]' AND (DeviceName LIKE '%<device_from_question>%' OR DeviceName IS NULL)
+4. Any NULL/empty field → immediately run JSON_EXTRACT on AdditionalFields
+5. Pivot to Device* tables ONLY with Timestamp BETWEEN '[AlertTime-10m]' AND '[AlertTime+10m]' AND DeviceName LIKE '%<device_from_question>%'
+6. Multiple results → validate against alert Timestamp before submitting
+7. If answer not found → check ProcessCommandLine LIKE '%keyword%', check RegistryKey, try broader Timestamp range
+8. If stuck on an external IP → search[<ip> threat intelligence known malware]
 
-Format: Thought: <reasoning>\nAction: execute[SQL] or submit[answer]
-One thought-action per response. DO NOT assume data not in logs.
+STRICT OUTPUT FORMAT (no exceptions):
+Thought: <plain prose — no markdown, no tables, no bullets>
+Action: execute[SELECT ...] or search[query] or submit[answer]
+
+One thought-action pair per response. Nothing before "Thought:" or after "Action: ...". DO NOT assume data not in logs.
 
 Examples demonstrating laws:
 """
@@ -109,6 +143,8 @@ class InvestigatorAgent:
                 credential=AzureKeyCredential(api_key),
                 seed=self.cache_seed
             )
+        elif api_type == "bedrock":
+            self.client = None   # uses call_llm_bedrock() directly
         else:
             # Handles "azure", "openai", OpenRouter
             self.client = OpenAIWrapper(config_list=config_list, cache_seed=cache_seed)
@@ -159,6 +195,17 @@ class InvestigatorAgent:
                 stop=["Observation:", "observation:"]
             )
             update_model_usage(self.total_usage, model_name=response.model, usage_dict=response.usage.as_dict())
+        elif api_type == "bedrock":
+            response = call_llm_bedrock(
+                config_entry=self.config_list[0],
+                messages=messages,
+                retry_num=self.retry_num,
+                retry_wait_time=self.retry_wait_time,
+                temperature=self.temperature,
+                use_thinking=True,
+                thinking_budget=3000,
+            )
+            update_model_usage(self.total_usage, model_name=response.model, usage_dict=response.usage.model_dump())
         else:
             # Handles "azure", "openai", and OpenRouter
             response = call_llm(
@@ -174,7 +221,7 @@ class InvestigatorAgent:
 
         return response.choices[0].message.content
 
-    def act(self, observation: str) -> Tuple[str, bool]:
+    def act(self, observation: str) -> Tuple[str, bool, str]:
         """
         Main action loop for investigator.
 
@@ -218,10 +265,36 @@ class InvestigatorAgent:
 
         self.step_count += 1
 
-        # Parse the action to extract SQL or answer
-        parsed_action, is_code, submit = sql_parser(action)
+        # Check for search action first, then SQL/submit
+        search_query, is_search = search_parser(action)
+        if is_search:
+            return search_query, False, "search"
 
-        return parsed_action, submit
+        # Parse SQL / submit actions
+        parsed_action, is_code, submit = sql_parser(action)
+        action_type = "submit" if submit else "execute"
+
+        # Safety: if no valid action found (e.g. markdown report instead of execute/submit),
+        # re-prompt once with strict format reminder rather than executing garbage as SQL.
+        if not is_code and not submit:
+            format_reminder = (
+                "ERROR: Your last response did not contain a valid action. "
+                "You MUST respond with exactly:\n"
+                "Thought: <one sentence>\n"
+                "Action: execute[SELECT ...] OR submit[answer] OR search[query]\n"
+                "Respond now with a valid Action."
+            )
+            self._add_message(format_reminder, role="user")
+            recovery = self._call_llm(self.messages)
+            print(f"[Investigator] Format recovery: {recovery[:200]}")
+            self._add_message(recovery.strip(), role="assistant")
+            s_query, is_s = search_parser(recovery)
+            if is_s:
+                return s_query, False, "search"
+            parsed_action, is_code, submit = sql_parser(recovery)
+            action_type = "submit" if submit else "execute"
+
+        return parsed_action, submit, action_type
 
     def _add_message(self, msg: str, role: str = "user"):
         """Add message to conversation history."""
@@ -241,6 +314,8 @@ class InvestigatorAgent:
                 credential=AzureKeyCredential(api_key),
                 seed=self.cache_seed
             )
+        elif api_type == "bedrock":
+            self.client = None  # uses call_llm_bedrock() directly
         elif api_type in ["azure", "openai"]:
             self.client = OpenAIWrapper(config_list=self.config_list, cache_seed=self.cache_seed)
 

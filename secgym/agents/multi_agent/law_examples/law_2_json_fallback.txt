@@ -1,0 +1,14 @@
+Question: What IP address was involved in the malicious credential theft tool execution?
+
+Thought: Step 1 - FORBIDDEN rule #2: never guess a timestamp. Find the relevant alert first.
+Action: execute[SELECT AlertId, Timestamp FROM AlertInfo WHERE Title LIKE '%credential%' OR Title LIKE '%mimikatz%']
+
+Observation: [('da123_1', '2024-07-04 22:35:03')]
+
+Thought: Step 2 - Get all entities from AlertEvidence including AdditionalFields, since RemoteIP may be empty.
+Action: execute[SELECT RemoteIP, ProcessCommandLine, AdditionalFields FROM AlertEvidence WHERE AlertId = 'da123_1']
+
+Observation: [('', 'mimikatz.exe sekurlsa::logonpasswords', '{"IpAddress": "107.224.99.179", "Type": "Ip"}')]
+
+Thought: RemoteIP is empty. Law #2 (JSON FALLBACK) + FORBIDDEN rule #3: I must parse AdditionalFields before giving up. The JSON clearly shows "IpAddress": "107.224.99.179". Law #6 (IOC CHAINING): I now have a confirmed IP IOC.
+Action: submit[107.224.99.179]

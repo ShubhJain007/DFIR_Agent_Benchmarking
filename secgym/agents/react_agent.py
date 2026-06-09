@@ -68,15 +68,17 @@ class ReActAgent:
         self.config_list = config_list
         self.temperature = temperature
         self.cache_seed = cache_seed
-
-        if "ai_foundry" in config_list[0]['api_type']:
+        api_type = config_list[0].get('api_type', 'openai')
+        
+        if api_type == "ai_foundry":
             from secgym.config_key import api_key
             self.client = ChatCompletionsClient(
-            endpoint= config_list[0]['endpoint'],
+            endpoint=config_list[0]['endpoint'],
             credential=AzureKeyCredential(api_key),
-            seed =self.cache_seed
-            )
-        elif "azure" in config_list[0]['api_type']:
+            seed=self.cache_seed
+        )
+        else:
+            # Handles "azure", "openai", OpenRouter
             self.client = OpenAIWrapper(config_list=config_list, cache_seed=cache_seed)
         
         sys_prompt = BASE_PROMPT
@@ -97,19 +99,9 @@ class ReActAgent:
         return "ReactAgent"
 
     def _call_llm(self, messages):
+        api_type = self.config_list[0].get('api_type', 'openai')
         
-        if "azure" in self.config_list[0]['api_type']:
-            response = call_llm(
-                client=self.client, 
-                model=self.config_list[0]['model'],
-                messages=messages,
-                retry_num=self.retry_num,
-                retry_wait_time=self.retry_wait_time,
-                temperature=self.temperature,
-                stop=["Observation:", "observation:"]
-            )
-            update_model_usage(self.totoal_usage, model_name=response.model, usage_dict=response.usage.model_dump())
-        elif "ai_foundry" in self.config_list[0]['api_type']:
+        if api_type == "ai_foundry":
             response = call_llm_foundry(
                 client=self.client, 
                 model=self.config_list[0]['model'],
@@ -120,6 +112,18 @@ class ReActAgent:
                 stop=["Observation:", "observation:"]
             )
             update_model_usage(self.totoal_usage, model_name=response.model, usage_dict=response.usage.as_dict())
+        else:
+            # Handles "azure", "openai", and OpenRouter (all OpenAI-compatible)
+            response = call_llm(
+                client=self.client, 
+                model=self.config_list[0]['model'],
+                messages=messages,
+                retry_num=self.retry_num,
+                retry_wait_time=self.retry_wait_time,
+                temperature=self.temperature,
+                stop=["Observation:", "observation:"]
+            )
+            update_model_usage(self.totoal_usage, model_name=response.model, usage_dict=response.usage.model_dump())
         
         return response.choices[0].message.content
         
@@ -169,7 +173,7 @@ class ReActAgent:
     def reset(self, change_seed=True):
         if change_seed:
             self.cache_seed += 1
-        
+        api_type = self.config_list[0].get('api_type', 'openai')
         if "ai_foundry" in self.config_list[0]['api_type']:
             from secgym.config_key import api_key
             self.client = ChatCompletionsClient(

@@ -24,24 +24,56 @@ from azure.core.credentials import AzureKeyCredential
 # If qa_gen_model = "gpt-4o", the config_list for qa_gen will be only the first dictionary in the config_list
 # Similarly in run_exp.py, if you set --model gpt-4o, the config_list for the agent will be only the first dictionary in the config_list
 
+_BEDROCK_BEARER = "YOUR_BEDROCK_BEARER_TOKEN"
 
 CONFIG_LIST = [
-    # exmaple using openai
-    #   {
-    #     "model": "gpt-4.1",
-    #     "api_key": open("/Users/kevin/Downloads/SecRL/keys/openaikey").read().strip(),
-    #     "tags": ["gpt-4.1"],
-    # }
-  
-  # example of using azure openai
-  # {
-  #   "model": "gpt-4.1-nano",
-  #   "base_url": "https://secphibench-aoai-eastus.openai.azure.com",
-  #   "api_type": "azure",
-  #   "api_version": "2025-01-01-preview",
-  #   "tags": ["gpt-4.1-nano"],
-  #   "azure_ad_token_provider": token_provider
-  # },
+    # ── Agent: Claude Sonnet 4.6 via AWS Bedrock (bearer token) ──────────────
+    {
+        "model":    "global.anthropic.claude-sonnet-4-6",
+        "api_key":  _BEDROCK_BEARER,
+        "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "api_type": "bedrock",
+        "tags":     ["claude-sonnet-bedrock"],
+        "temperature": 0,
+    },
+    # ── Evaluator: also Claude Sonnet 4.6 via Bedrock (same model) ───────────
+    {
+        "model":    "global.anthropic.claude-sonnet-4-6",
+        "api_key":  _BEDROCK_BEARER,
+        "base_url": "https://bedrock-runtime.us-east-1.amazonaws.com",
+        "api_type": "bedrock",
+        "tags":     ["eval-bedrock"],
+        "temperature": 0,
+    },
+    # ── Evaluator: Claude Haiku 4.5 via OpenRouter (OpenAI-compatible) ────────
+    # The LLMEvaluator uses OpenAIWrapper internally — needs OpenAI-format API
+    # OpenRouter proxies Claude so it works seamlessly as the evaluator
+    # price: [input_per_1k, output_per_1k] in USD — suppresses autogen cost warning
+    {
+        "model": "anthropic/claude-haiku-4.5",
+        "api_key": 'YOUR_OPENROUTER_API_KEY',
+        "base_url": "https://openrouter.ai/api/v1",
+        "tags": ["eval"],
+        "api_type": "openai",
+        "temperature": 0,
+        "price": [0.0008, 0.004],        # $0.80/M input, $4.00/M output
+    },
+    # ── Agent fallback: Claude Haiku 4.5 via OpenRouter ──────────────────────
+    {
+        "model": "anthropic/claude-haiku-4-5:beta",
+        "api_key": 'YOUR_OPENROUTER_API_KEY',
+        "base_url": "https://openrouter.ai/api/v1",
+        "tags": ["claude"],
+        "api_type": "openai",
+        "temperature": 0
+    },
+    # ── gpt-4o (kept as backup) ───────────────────────────────────────────────
+    {
+        "model": "gpt-4o",
+        "api_key": "YOUR_OPENAI_API_KEY",
+        "tags": ["eval-gpt"],
+        "temperature": 0
+    },
 ]
 
 if len(CONFIG_LIST) == 0:

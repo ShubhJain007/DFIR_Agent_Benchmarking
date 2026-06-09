@@ -1,0 +1,26 @@
+Question: What remote host did the attacker connect to after compromising the initial workstation?
+Context: A lateral movement alert was triggered showing remote authentication from a compromised workstation to another system on the network.
+
+Thought: Lateral movement typically involves remote logins or connections using protocols like RDP, SMB, or WinRM. Let me start by finding the compromised workstation from the security alerts.
+Action: execute[SELECT AlertId, Title, Description FROM AlertInfo WHERE Title LIKE '%lateral%' OR Title LIKE '%remote%' LIMIT 5]
+Observation: Returns alert with Title "Lateral movement detected" and AlertId = 'A-8821', Description mentions workstation 'WKS-042'.
+
+Thought: Now I need to find what remote connections originated from WKS-042. Let me check the AlertEvidence table for destination hosts.
+Action: execute[SELECT DeviceName, RemoteIP, RemoteDeviceName FROM AlertEvidence WHERE AlertId = 'A-8821' LIMIT 10]
+Observation: Returns:
+| DeviceName | RemoteIP | RemoteDeviceName |
+| WKS-042 | 10.20.30.15 | DC01 |
+
+Thought: The AlertEvidence shows that WKS-042 connected to 'DC01' (Domain Controller) at IP 10.20.30.15. Let me verify this by checking authentication logs to confirm the remote login.
+Action: execute[DESCRIBE IdentityLogonEvents]
+Observation: Table has columns: Timestamp, DeviceName, DestinationDeviceName, LogonType, AccountName, IPAddress, and others.
+
+Thought: I'll query IdentityLogonEvents to find remote logons from WKS-042 to verify the destination host.
+Action: execute[SELECT DestinationDeviceName, LogonType, AccountName FROM IdentityLogonEvents WHERE DeviceName = 'WKS-042' AND LogonType IN ('RemoteInteractive', 'Network') ORDER BY Timestamp DESC LIMIT 10]
+Observation: Returns:
+| DestinationDeviceName | LogonType | AccountName |
+| DC01 | RemoteInteractive | admin@contoso.com |
+| DC01 | Network | admin@contoso.com |
+
+Thought: The authentication logs confirm that after compromising WKS-042, the attacker connected to 'DC01' (the domain controller) using remote interactive logon. This is a classic lateral movement pattern targeting high-value assets.
+Action: submit[DC01]

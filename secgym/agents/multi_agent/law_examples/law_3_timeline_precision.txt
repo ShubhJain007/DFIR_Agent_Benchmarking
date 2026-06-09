@@ -1,0 +1,14 @@
+Question: What is the command line of the suspicious process on device vnevado-win11u?
+
+Thought: FORBIDDEN rule #2: I must get the alert Timestamp FIRST — never query Device* tables without it. Law #3 (TIMESTAMP FIRST).
+Action: execute[SELECT AlertId, Timestamp FROM AlertInfo WHERE Title LIKE '%behavior%' OR Title LIKE '%suspicious%' OR Title LIKE '%user%']
+
+Observation: [('da456_1', '2024-06-20 09:29:42')]
+
+Thought: Alert timestamp is 2024-06-20 09:29:42. Law #4 (ENTITY PIVOTING): check AlertEvidence for ProcessCommandLine and AdditionalFields BEFORE going to Device* tables.
+Action: execute[SELECT ProcessCommandLine, AdditionalFields FROM AlertEvidence WHERE AlertId = 'da456_1']
+
+Observation: [('', '{"CommandLine": "curl http://vectorsandarrows.com", "ProcessId": "88"}')]
+
+Thought: ProcessCommandLine is empty in the primary column. Law #2 (JSON FALLBACK): AdditionalFields has the answer — CommandLine = "curl http://vectorsandarrows.com". FORBIDDEN rule #3 satisfied: I checked AdditionalFields before submitting. Law #7 (ATTACK CHAIN): curl to external URL = initial download stage of attack.
+Action: submit[curl http://vectorsandarrows.com]

@@ -1,0 +1,32 @@
+Question: What external IP address was the compromised host beaconing to at regular intervals?
+Context: Network monitoring detected periodic communication from a compromised workstation to an external command and control server.
+
+Thought: Command and control (C2) beaconing shows up as regular network connections to external IPs. I need to find network events showing repeated connections. Let me start by checking available tables.
+Action: execute[SHOW TABLES]
+Observation: Tables include: DeviceNetworkEvents, SecurityAlert, AlertInfo, AlertEvidence, and many others.
+
+Thought: DeviceNetworkEvents should contain network connection data. Let me also check if there's a security alert about C2 communication first.
+Action: execute[SELECT AlertId, Title, Description FROM AlertInfo WHERE Title LIKE '%command%' OR Title LIKE '%C2%' OR Title LIKE '%beacon%' LIMIT 5]
+Observation: Returns alert "Potential C2 beaconing detected" with AlertId = 'A-7453', Description mentions "periodic connections to suspicious external IP".
+
+Thought: Let me check AlertEvidence to find the external IP and the compromised device.
+Action: execute[SELECT DeviceName, RemoteIP, RemoteUrl, EntityType FROM AlertEvidence WHERE AlertId = 'A-7453' LIMIT 10]
+Observation: Returns:
+| DeviceName | RemoteIP | RemoteUrl | EntityType |
+| WKS-089 | 185.220.101.42 | - | ip-address |
+
+Thought: The alert evidence shows WKS-089 connected to external IP 185.220.101.42. Let me verify this is beaconing by checking the network events to see if there are multiple connections at regular intervals.
+Action: execute[DESCRIBE DeviceNetworkEvents]
+Observation: Columns include: Timestamp, DeviceName, RemoteIP, RemotePort, LocalIP, InitiatingProcessFileName, and others.
+
+Thought: I'll query DeviceNetworkEvents for connections from WKS-089 to 185.220.101.42 to confirm the beaconing pattern.
+Action: execute[SELECT Timestamp, RemoteIP, RemotePort, InitiatingProcessFileName FROM DeviceNetworkEvents WHERE DeviceName = 'WKS-089' AND RemoteIP = '185.220.101.42' ORDER BY Timestamp LIMIT 10]
+Observation: Returns multiple entries:
+| Timestamp | RemoteIP | RemotePort | InitiatingProcessFileName |
+| 2024-01-15 10:05:23 | 185.220.101.42 | 443 | svchost.exe |
+| 2024-01-15 10:10:24 | 185.220.101.42 | 443 | svchost.exe |
+| 2024-01-15 10:15:22 | 185.220.101.42 | 443 | svchost.exe |
+| 2024-01-15 10:20:25 | 185.220.101.42 | 443 | svchost.exe |
+
+Thought: Perfect! The network events show connections approximately every 5 minutes to 185.220.101.42 on port 443, initiated by svchost.exe. This is classic C2 beaconing behavior. The external IP the host was beaconing to is 185.220.101.42.
+Action: submit[185.220.101.42]

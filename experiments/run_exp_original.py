@@ -11,8 +11,7 @@ from secgym.evaluator import LLMEvaluator, Evaluator
 from secgym.myconfig import CONFIG_LIST
 from secgym.qagen.alert_graph import AlertGraph
 import argparse
-from secgym.agents import BaselineAgent, PromptSauceAgent, MultiModelBaselineAgent, ReActAgent, PromptSauceReflexionAgent, ReActReflexionAgent, ExpelAgent, BeamSearchReActAgent, MCTSReActAgent, OrchestratorAgent
-from secgym.agents.multi_agent.schema_manager import SchemaManager
+from secgym.agents import BaselineAgent, PromptSauceAgent, MultiModelBaselineAgent, ReActAgent, PromptSauceReflexionAgent, ReActReflexionAgent, ExpelAgent, OrchestratorAgent
 
 #config_list_4_turbo, config_list_35
 
@@ -80,9 +79,6 @@ def run_experiment(
                     print(f"Skipping question with key {current_question_key}")
                     break
 
-            # capture question text for incident memory update
-            question_text = observation if isinstance(observation, str) else str(observation)
-
             # run one episode
             for s in range(thug_env.max_steps):
                 print(f"Observation: {observation}")
@@ -104,17 +100,6 @@ def run_experiment(
                         reward = 0
                         break
                 observation, reward, _, info = thug_env.step(action=action, submit=submit)
-
-                # store successful answer in incident memory (multi-agent DFIR only)
-                if submit and reward > 0 and hasattr(agent, 'incident_memory'):
-                    agent.incident_memory.store_from_answer(
-                        question=question_text,
-                        answer=action,
-                    )
-
-                # reflection: generate a lesson-learned after a failed submission
-                if submit and reward == 0 and hasattr(agent, 'reflect'):
-                    agent.reflect(question=question_text, wrong_answer=action)
 
                 if submit:
                     break
@@ -162,7 +147,7 @@ def run_experiment(
         print(f"Question {i+1} | Reward: {reward} || Accumlated Success: {accum_success}/{tested_num}={accum_success/(tested_num):.3f} | Avg Reward so far: {accum_reward/(tested_num):.3f}")  
         print("*"*50, "\n", "*"*50)
 
-        if trial_run and tested_num >= 2:
+        if trial_run and tested_num >= 25:
             print("Trial run completed, stopping after 2 questions.")
             break
     
@@ -179,17 +164,11 @@ def get_args():
     parser.add_argument("--layer", type=str, default="alert", help="Layer to use for the agent")
     #parser.add_argument("--step_checking", action="store_true", help="Evaluate each step")
     parser.add_argument("--agent", type=str, default="baseline", help="Agent to use for the experiment")
-    parser.add_argument("--attack", type=str, default=None, help="Specific incident to run (e.g. incident_55). Runs all if not specified.")
     parser.add_argument("--num_trials", type=int, default=1, help="Number of trials to run for each question if not solved")
     parser.add_argument("--split", type=str, default="test", help="Split to use for the experiment")
     parser.add_argument("--full_db", action="store_true", help="Use full database for the experiment. Need to setup 'AlphineSkiHouse' database first.")
     parser.add_argument("--trial_run", action="store_true", help="Run the experiment in trial mode, will only run 2 questions from the first attack")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite the saved agent file if it exists")
-    parser.add_argument("--scorer_model", type=str, default=None, help="Model for beam search/MCTS scorer (default: same as --eval_model)")
-    parser.add_argument("--beam_width", type=int, default=3, help="Number of parallel beams for beam search agent")
-    parser.add_argument("--n_simulations", type=int, default=6, help="Number of MCTS simulations per step")
-    parser.add_argument("--expand_width", type=int, default=3, help="Number of children to expand per MCTS node")
-    parser.add_argument("--exploration_weight", type=float, default=1.414, help="UCB1 exploration weight for MCTS")
     args = parser.parse_args()
     return args
 
@@ -232,46 +211,15 @@ if __name__ == "__main__":
         "prompt_sauce": PromptSauceAgent,
         "ps_reflexion": PromptSauceReflexionAgent,
         "react_reflexion": ReActReflexionAgent,
+        "multi_agent": OrchestratorAgent,  # NEW: Multi-agent DFIR system
     }
 
-    if args.agent == "multi_agent_dfir":
-        test_agent = OrchestratorAgent(
-            config_list=agent_config_list,
-            extractor_config_list=eval_config_list,  # fast Haiku for extraction
-            cache_seed=cache_seed,
-            max_steps=max_steps,
-            temperature=temperature,
-        )
-    elif args.agent in agent_map:
+    if args.agent in agent_map:
         test_agent = agent_map[args.agent](
             config_list=agent_config_list,
             cache_seed=cache_seed, 
             temperature=temperature,
             max_steps=max_steps,
-        )
-    elif args.agent == "beam_search":
-        scorer_model = args.scorer_model or eval_model
-        scorer_config_list = filter_config_list(CONFIG_LIST, scorer_model)
-        test_agent = BeamSearchReActAgent(
-            config_list=agent_config_list,
-            scorer_config_list=scorer_config_list,
-            cache_seed=cache_seed,
-            temperature=temperature if temperature > 0 else 0.7,
-            max_steps=max_steps,
-            beam_width=args.beam_width,
-        )
-    elif args.agent == "mcts":
-        scorer_model = args.scorer_model or eval_model
-        scorer_config_list = filter_config_list(CONFIG_LIST, scorer_model)
-        test_agent = MCTSReActAgent(
-            config_list=agent_config_list,
-            scorer_config_list=scorer_config_list,
-            cache_seed=cache_seed,
-            temperature=temperature if temperature > 0 else 0.7,
-            max_steps=max_steps,
-            n_simulations=args.n_simulations,
-            expand_width=args.expand_width,
-            exploration_weight=args.exploration_weight,
         )
     elif args.agent == "multi_model_baseline":
         agent_config_list_master = filter_config_list(CONFIG_LIST, "o3-mini")
@@ -306,7 +254,7 @@ if __name__ == "__main__":
         sub_dir += f"_{args.split}"
     os.makedirs(f"{base_dir}/{sub_dir}", exist_ok=True)
 
-    for attack in ([args.attack] if hasattr(args, 'attack') and args.attack else ATTACKS):
+    for attack in ATTACKS:
         print(f"Running attack: {attack}")
         save_agent_file = f"{base_dir}/{sub_dir}/agent_{attack}.json" 
         save_env_file = f"{base_dir}/{sub_dir}/env_{attack}.json"
@@ -320,16 +268,7 @@ if __name__ == "__main__":
             use_full_db=use_full_db,
             layer=layer,
         )
-
-        # ── Multi-agent DFIR: per-incident setup ──────────────────────────
-        if hasattr(test_agent, 'incident_memory'):
-            test_agent.reset(new_incident=True)
-        if hasattr(test_agent, 'load_schema'):
-            schema_mgr = SchemaManager(execute_query_fn=thug_env.execute_query)
-            schema_str = schema_mgr.discover()
-            test_agent.load_schema(schema_str)
-        # ──────────────────────────────────────────────────────────────────
-
+        
         avg_success, tested_num, avg_reward = run_experiment(
             agent=test_agent,
             thug_env=thug_env,

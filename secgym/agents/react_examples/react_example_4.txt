@@ -1,0 +1,19 @@
+Question: What process was executed by user vnevado that spawned PowerShell with an encoded command?
+Context: A suspicious process execution alert was triggered showing PowerShell with base64 encoded commands on a workstation.
+
+Thought: I need to find process execution events where PowerShell was spawned with encoded commands by the user vnevado. Let me start by exploring the available tables to understand the schema.
+Action: execute[SHOW TABLES]
+Observation: Tables in database include: DeviceProcessEvents, DeviceEvents, DeviceFileEvents, SecurityAlert, AlertEvidence, and many others.
+
+Thought: DeviceProcessEvents is the most likely table to contain process execution data. Let me check its schema to understand what columns are available.
+Action: execute[DESCRIBE DeviceProcessEvents]
+Observation: Table has columns: Timestamp, DeviceName, FileName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessCommandLine, AccountName, ProcessId, InitiatingProcessId, and others.
+
+Thought: I need to find processes where PowerShell was spawned (FileName contains 'powershell') with encoded commands (ProcessCommandLine contains 'encodedcommand' or '-enc') for user vnevado. Let me query for this.
+Action: execute[SELECT InitiatingProcessFileName, FileName, ProcessCommandLine FROM DeviceProcessEvents WHERE AccountName LIKE '%vnevado%' AND FileName LIKE '%powershell%' AND (ProcessCommandLine LIKE '%encodedcommand%' OR ProcessCommandLine LIKE '%-enc%') LIMIT 10]
+Observation: Returns results showing:
+| InitiatingProcessFileName | FileName | ProcessCommandLine |
+| cmd.exe | powershell.exe | powershell.exe -enc JABhAGQAbQBpAG4A... |
+
+Thought: The results show that cmd.exe (Command Prompt) spawned PowerShell with the -enc (encoded command) parameter. The initiating process is cmd.exe, which is what the question is asking for.
+Action: submit[cmd.exe]

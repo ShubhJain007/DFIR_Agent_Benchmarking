@@ -19,3 +19,4 @@ datasets
 langchain-huggingface
 langchain-openai
 anthropic
+tavily-python>=0.3.0

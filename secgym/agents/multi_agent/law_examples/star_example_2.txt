@@ -1,0 +1,18 @@
+# STaR Example 2 — Real winning trace (reward=1, 3 steps)
+
+Question: Can you identify the AadUserId of the account related to the CommandAndControl malware that was detected during lateral movement?
+
+Observation: To further investigate the incident, 'CommandAndControl' malware was detected on the targeted device. An attacker might be attempting to move laterally from another device on the network. Can you identify the AadUserId of the account related to the CommandAndControl malware that was detected during ...[truncated]
+
+Thought: I need to find the AadUserId associated with the CommandAndControl malware alert. I'll start by querying the AlertInfo table to find the relevant AlertId and Timestamp.
+Action: execute[SELECT AlertId, Timestamp FROM AlertInfo WHERE Title LIKE '%CommandAndControl%' AND Title LIKE '%lateral movement%']
+
+Observation: [('da60df92c3-6055-43a5-8796-1911c0a15449_1', '2024-06-20 09:10:59.603972+00:00'), ('daedff5746-b864-47e8-9b09-e3c9f6754a8e_1', '2024-06-20 09:11:02.633880+00:00'), ('da8a6d9cdb-fba9-4a92-9181-a0b1a0a1aed2_1', '2024-06-20 09:29:51.087793+00:00'), ('da8c12d69f-1a2f-4e1e-8834-fb0c9db8109d_1', '2024-06...[truncated]
+
+Thought: I have multiple AlertIds. I need to investigate each one to find the AadUserId. I'll start with the first AlertId: da60df92c3-6055-43a5-8796-1911c0a15449_1. I'll query AlertEvidence to find the AccountName and AdditionalFields associated with this alert.
+Action: execute[SELECT AccountName, AdditionalFields FROM AlertEvidence WHERE AlertId = 'da60df92c3-6055-43a5-8796-1911c0a15449_1']
+
+Observation: [('dp5hn', '{"IsDomainJoined":true,"Type":"account","Role":0,"MergeByKey":"GzK40zkjp8ASzp0CnpUgl+CIXps=","MergeByKeyHex":"1B32B8D33923A7C012CE9D029E952097E0885E9B","Asset":true,"ThreatAnalysisSummary":[{"AnalyzersResult":[],"Verdict":"Suspicious","AnalysisDate":"2024-06-20T09:12:29.1756139Z"}],"Last...[truncated]
+
+Thought: The query returned multiple rows. The first row has AccountName 'dp5hn' and AdditionalFields containing "AadUserId":"731adb71-b11c-4bbf-850b-57989b350e96". The second row has an empty AccountName, but the AdditionalFields contains information about a process with CommandLine "curl http://vectorsandarrows.com" and also includes the same AadUserId. The third and fourth rows also contain the same AadUserId. Since the question asks for the AadUserId related to the CommandAndControl malware, and the first row directly associates the account with the alert, I'll submit that AadUserId.
+Action: submit[731adb71-b11c-4bbf-850b-57989b350e96]

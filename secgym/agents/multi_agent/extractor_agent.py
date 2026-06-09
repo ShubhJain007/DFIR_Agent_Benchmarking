@@ -15,7 +15,7 @@ is to pick the right value from evidence already retrieved.
 import re
 from typing import Tuple
 from autogen import OpenAIWrapper
-from secgym.agents.agent_utils import call_llm, update_model_usage
+from secgym.agents.agent_utils import call_llm, call_llm_bedrock, update_model_usage
 
 
 # ---------------------------------------------------------------------------
@@ -27,39 +27,58 @@ def detect_answer_type(question: str) -> str:
     Infer the expected answer format from question phrasing.
     Returned string is injected into the extractor prompt to constrain
     which values the model should consider.
+
+    IMPORTANT: Security incident questions often have a long context paragraph
+    followed by the actual question sentence at the end (e.g., "... IP address
+    99.x.x.x was detected. What is the command line ...?").
+    We must analyse only the FINAL question sentence to avoid misclassification.
     """
-    q = question.lower()
-    if any(x in q for x in ["ip address", "ip addr", "ip of", "ip used", "ip associated",
-                              "what is the ip", "identify the ip"]):
-        return "IPv4 address (format: X.X.X.X)"
-    if any(x in q for x in ["email", "user principal", "upn"]):
-        return "email address or User Principal Name"
-    if any(x in q for x in ["user", "account", "who "]):
-        return "username or account name"
-    if any(x in q for x in ["hostname", "device name", "host of", "machine name"]):
-        return "hostname or device name"
-    if any(x in q for x in ["command line", "commandline", "command used"]):
+    # Extract the last sentence — the actual question — to avoid false matches
+    # from context sentences (e.g., "IP address X.X.X.X has been detected")
+    import re as _re
+    sentences = _re.split(r'(?<=[.!?])\s+', question.strip())
+    # Use only the last non-empty sentence for type detection
+    actual_q = next((s for s in reversed(sentences) if s.strip()), question)
+    q = actual_q.lower()
+
+    # More-specific patterns must come BEFORE broad ones like "user" / "account"
+    # to avoid false matches (e.g., "user behavior change" matching "user").
+    if any(x in q for x in ["command line", "commandline", "command used",
+                              "process command", "executed command"]):
         return "command line string"
-    if any(x in q for x in ["file name", "filename", "file associated",
-                              "name of the file", "name of the malware"]):
-        return "filename (e.g. malware.exe)"
-    if any(x in q for x in ["process name", "process involved"]):
+    if any(x in q for x in ["process name", "process involved", "process that"]):
         return "process name"
-    if any(x in q for x in ["hash", "sha", "md5"]):
+    if any(x in q for x in ["ip address", "ip addr", "ip of", "ip used", "ip associated",
+                              "what is the ip", "identify the ip", "remote ip",
+                              "source ip", "destination ip"]):
+        return "IPv4 address (format: X.X.X.X)"
+    if any(x in q for x in ["url", "domain", "remote url", "website", "web address"]):
+        return "URL or domain name"
+    if any(x in q for x in ["file name", "filename", "file associated",
+                              "name of the file", "name of the malware", "malware name"]):
+        return "filename (e.g. malware.exe)"
+    if any(x in q for x in ["hash", "sha256", "sha1", "md5", "file hash"]):
         return "file hash (hex string)"
-    if any(x in q for x in ["timestamp", "time of", "when did", "when was"]):
+    if any(x in q for x in ["timestamp", "time of", "when did", "when was", "what time"]):
         return "timestamp (datetime string)"
-    if any(x in q for x in ["cloud app", "application id", "app id"]):
-        return "cloud application ID (integer)"
+    if any(x in q for x in ["hostname", "device name", "host of", "machine name",
+                              "which device", "what device"]):
+        return "hostname or device name"
     if any(x in q for x in ["sid ", "security identifier"]):
         return "Windows SID (format: S-1-5-...)"
-    if any(x in q for x in ["aad", "azure ad", "object id",
-                              "device id", "aaddeviceid", "aaduser"]):
+    if any(x in q for x in ["aaddeviceid", "aaduser", "azure ad object",
+                              "aad object", "device id"]):
         return "Azure AD GUID (format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)"
     if any(x in q for x in ["port", "remote port", "local port"]):
         return "port number (integer)"
-    if any(x in q for x in ["registry", "regkey"]):
+    if any(x in q for x in ["registry", "regkey", "registry key"]):
         return "Windows registry key path"
+    if any(x in q for x in ["cloud app", "application id", "app id", "appid"]):
+        return "cloud application ID (integer)"
+    if any(x in q for x in ["email", "user principal", "upn", "mail address"]):
+        return "email address or User Principal Name"
+    if any(x in q for x in ["user", "account", "who ", "username", "which user"]):
+        return "username or account name"
     return "specific string value"
 
 
@@ -109,7 +128,8 @@ class ExtractorAgent:
         self.config_list = config_list
         self.retry_num = retry_num
         self.retry_wait_time = retry_wait_time
-        self.client = OpenAIWrapper(config_list=config_list, cache_seed=None)
+        api_type = config_list[0].get('api_type', 'openai')
+        self.client = None if api_type == "bedrock" else OpenAIWrapper(config_list=config_list, cache_seed=None)
         self.total_usage: dict = {}
         self._call_count: int = 0
 
@@ -142,8 +162,8 @@ class ExtractorAgent:
             f"QUESTION: {question}\n\n"
             f"ANSWER TYPE: {answer_type}\n\n"
             f"CANDIDATE ANSWER: {candidate}\n\n"
-            f"EVIDENCE (raw database results — up to 3000 chars):\n"
-            f"{result_context[:3000]}"
+            f"EVIDENCE (raw database results — up to 6000 chars):\n"
+            f"{result_context[:6000]}"
         )
 
         messages = [
@@ -152,14 +172,25 @@ class ExtractorAgent:
         ]
 
         try:
-            response = call_llm(
-                client=self.client,
-                model=self.config_list[0]["model"],
-                messages=messages,
-                retry_num=self.retry_num,
-                retry_wait_time=self.retry_wait_time,
-                temperature=0,
-            )
+            api_type = self.config_list[0].get('api_type', 'openai')
+            if api_type == "bedrock":
+                response = call_llm_bedrock(
+                    config_entry=self.config_list[0],
+                    messages=messages,
+                    retry_num=self.retry_num,
+                    retry_wait_time=self.retry_wait_time,
+                    temperature=0,
+                    use_thinking=False,  # extractor is fast/focused — no thinking needed
+                )
+            else:
+                response = call_llm(
+                    client=self.client,
+                    model=self.config_list[0]["model"],
+                    messages=messages,
+                    retry_num=self.retry_num,
+                    retry_wait_time=self.retry_wait_time,
+                    temperature=0,
+                )
             update_model_usage(
                 self.total_usage,
                 model_name=response.model,
@@ -179,6 +210,9 @@ class ExtractorAgent:
     def _parse(self, text: str, fallback: str) -> Tuple[str, float]:
         """Parse ANSWER: X | CONFIDENCE: Y | REASON: Z."""
         try:
+            # Log raw response for debugging (first 200 chars)
+            print(f"[Extractor] Raw response: {text[:200]!r}")
+
             answer_m = re.search(r'ANSWER:\s*(.+?)\s*\|', text)
             conf_m   = re.search(r'CONFIDENCE:\s*([0-9.]+)', text)
 
@@ -192,7 +226,8 @@ class ExtractorAgent:
             print(f"[Extractor] Validated: {answer!r} (conf={confidence:.2f})")
             return answer, confidence
 
-        except Exception:
+        except Exception as e:
+            print(f"[Extractor] Parse error: {e} | text={text[:100]!r}")
             return fallback, 0.5
 
     @property

